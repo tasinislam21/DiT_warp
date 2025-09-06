@@ -4,13 +4,12 @@ import torch.utils.data as data
 import torch
 import os.path as osp
 from torchvision import transforms
-from models import DiT_XL_2
+from models import DiT_XL_2, apply_lora_to_model, freeze_non_lora
 from timm.models.vision_transformer import PatchEmbed
 from models import FinalLayer
 import torch.nn.functional as F
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.models import AutoencoderKL
-from tqdm import tqdm
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
@@ -136,12 +135,22 @@ latent_size = int(config.image_size) // 8
 model = DiT_XL_2(input_size=latent_size)
 state_dict = torch.load("DiT-XL-2-256x256.pt")
 model.load_state_dict(state_dict)
-model.requires_grad_(False)
+model = apply_lora_to_model(model, verbose=accelerator)
+freeze_non_lora(model)
 model.x_embedder = PatchEmbed(latent_size, 2, 12, 1152, bias=True)
 model.final_layer =  FinalLayer(1152, 2, 4)
 model.x_embedder.requires_grad_(True)
 model.final_layer.requires_grad_(True)
-model.to(device)
+if accelerator.is_main_process:
+    total_params = sum([p.numel() for p in model.parameters()])
+    trainable_params = sum([p.numel() for p in model.parameters() if p.requires_grad])
+    print(
+        f"""
+      {total_params} total params,
+      {trainable_params}" trainable params,
+      {(100.0 * trainable_params / total_params):.2f}% of all params are trainable.
+      """
+    )
 #model.load_state_dict(torch.load("model.pt"))
 
 preprocess = transforms.Compose(

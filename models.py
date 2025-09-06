@@ -14,7 +14,7 @@ import torch.nn as nn
 import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
-
+import re
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -141,6 +141,79 @@ class FinalLayer(nn.Module):
         x = self.linear(x)
         return x
 
+_QKVO_RE = re.compile(r"^blocks\.(\d+)\.attn\.qkv$")
+class LoRALayer(nn.Module):
+    def __init__(self, original_layer: nn.Linear, rank=8, alpha=16, dropout=0.05):
+        super().__init__()
+        assert isinstance(original_layer, nn.Linear), "LoRALayer only supports nn.Linear."
+        self.original_layer = original_layer
+        self.rank = rank
+        self.alpha = alpha
+        self.scaling = alpha / rank
+
+        # Freeze original Linear
+        for p in self.original_layer.parameters():
+            p.requires_grad = False
+
+        in_features  = original_layer.in_features
+        out_features = original_layer.out_features
+        device = original_layer.weight.device
+        dtype  = original_layer.weight.dtype
+
+        # LoRA A/B
+        self.lora_a = nn.Linear(in_features, rank, bias=False, device=device, dtype=dtype)
+        self.lora_b = nn.Linear(rank, out_features, bias=False, device=device, dtype=dtype)
+        self.dropout = nn.Dropout(dropout)
+
+        # Init: B=0 so the initial output is unchanged
+        nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_b.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.original_layer(x) + self.scaling * self.lora_b(self.lora_a(self.dropout(x)))
+
+    @torch.no_grad()
+    def merge(self):
+        delta = (self.scaling * self.lora_b.weight) @ self.lora_a.weight
+        self.original_layer.weight += delta
+
+    @torch.no_grad()
+    def unmerge(self):
+        delta = (self.scaling * self.lora_b.weight) @ self.lora_a.weight
+        self.original_layer.weight -= delta
+
+def _get_parent_and_attr(model: nn.Module, module_name: str):
+    parts = module_name.split(".")
+    parent = model
+    for p in parts[:-1]:
+        if p.isdigit():
+            parent = parent[int(p)]
+        else:
+            parent = getattr(parent, p)
+    return parent, parts[-1]
+
+def apply_lora_to_model(model: nn.Module, verbose, rank=8, alpha=16, dropout=0.05):
+    to_replace = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear) and _QKVO_RE.match(name):
+            to_replace.append((name, module))
+    for name, module in to_replace:
+        parent, attr = _get_parent_and_attr(model, name)
+        lora = LoRALayer(module, rank=rank, alpha=alpha, dropout=dropout)
+        with torch.no_grad():
+            lora.original_layer.weight.copy_(module.weight.data)
+        setattr(parent, attr, lora)
+        if verbose.is_main_process:
+            print(f"[LoRA] injected -> {name} ({module.in_features}->{module.out_features})")
+    print(f"[LoRA] total injected: {len(to_replace)}")
+    return model
+
+def freeze_non_lora(model: nn.Module):
+    for n, p in model.named_parameters():
+        if (".lora_a.weight" in n) or (".lora_b.weight" in n):
+            p.requires_grad = True
+        else:
+            p.requires_grad = False
 
 class DiT(nn.Module):
     """
@@ -246,25 +319,6 @@ class DiT(nn.Module):
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
-
-    def forward_with_cfg(self, x, t, y, cfg_scale):
-        """
-        Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
-        """
-        # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
-        half = x[: len(x) // 2]
-        combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, t, y)
-        # For exact reproducibility reasons, we apply classifier-free guidance on only
-        # three channels by default. The standard approach to cfg applies it to all channels.
-        # This can be done by uncommenting the following line and commenting-out the line following that.
-        # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
-        eps, rest = model_out[:, :3], model_out[:, 3:]
-        cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-        eps = torch.cat([half_eps, half_eps], dim=0)
-        return torch.cat([eps, rest], dim=1)
-
 
 #################################################################################
 #                   Sine/Cosine Positional Embedding Functions                  #

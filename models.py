@@ -220,7 +220,7 @@ class DiT(nn.Module):
         x: (N, T, patch_size**2 * C)
         imgs: (N, H, W, C)
         """
-        c = self.out_channels
+        c = 4
         p = self.x_embedder.patch_size[0]
         h = w = int(x.shape[1] ** 0.5)
         assert h * w == x.shape[1]

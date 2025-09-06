@@ -20,7 +20,7 @@ import os
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 4
+    train_batch_size = 1
     num_epochs = 1000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
@@ -160,10 +160,9 @@ lr_scheduler = get_cosine_schedule_with_warmup(
     num_training_steps=(len(train_dataloader) * config.num_epochs),
 )
 
-
-
-vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
-vae.requires_grad_(False)
+if accelerator.is_main_process:
+    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
+    vae.requires_grad_(False)
 
 def evaluate(epoch):
     noise = torch.randn([config.train_batch_size, 4, 32, 32]).to(device)

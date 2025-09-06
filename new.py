@@ -101,7 +101,7 @@ posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
 class BaseDataset(data.Dataset):
     def __init__(self, padding = 32):
         super(BaseDataset, self).__init__()
-        self.name_list = os.listdir('data_binary/image')
+        self.name_list = os.listdir('data_binary/extracted')
         self.preprocess = transforms.Compose(
             [
                 transforms.Resize((config.image_size, config.image_size)),

@@ -175,7 +175,7 @@ if accelerator.is_main_process:
 
 def evaluate(epoch):
     noise = torch.randn([config.train_batch_size, 4, 32, 32]).to(device)
-    model.requires_grad_(False)
+    model.eval()
     for i in range(0, 1000)[::-1]:
         t = torch.full((1,), i, device=device).long()
         noise = sample_timestep(noise, t)
@@ -194,7 +194,11 @@ global_step = 0
 for epoch in range(config.num_epochs):
     progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch}")
-
+    if accelerator.is_main_process:
+        print("Evaluating")
+        evaluate(epoch)
+        model.train()
+        print("Evaluation Finished")
     for step, batch in enumerate(train_dataloader):
         warped = batch["warped"]
         pose = batch["pose"]
@@ -236,8 +240,7 @@ for epoch in range(config.num_epochs):
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
             print("Evaluating")
             evaluate(epoch)
-            model.x_embedder.requires_grad_(True)
-            model.final_layer.requires_grad_(True)
+            model.train()
             print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:

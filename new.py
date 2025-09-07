@@ -194,11 +194,6 @@ global_step = 0
 for epoch in range(config.num_epochs):
     progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch}")
-    if accelerator.is_main_process:
-        print("Evaluating")
-        evaluate(epoch)
-        model.train()
-        print("Evaluation Finished")
     for step, batch in enumerate(train_dataloader):
         warped = batch["warped"]
         pose = batch["pose"]

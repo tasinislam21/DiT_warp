@@ -19,7 +19,7 @@ import os
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 1
+    train_batch_size = 32
     num_epochs = 1000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4

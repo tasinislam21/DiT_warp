@@ -59,6 +59,12 @@ class CustomImageDataset(Dataset):
 if __name__ == '__main__':
     dataset = CustomImageDataset()
     train_dataloader = torch.utils.data.DataLoader(dataset, batch_size=8)
+    if not os.path.exists("data_binary/pose"):
+        os.makedirs("data_binary/pose")
+    if not os.path.exists("data_binary/color"):
+        os.makedirs("data_binary/color")
+    if not os.path.exists("data_binary/extracted"):
+        os.makedirs("data_binary/extracted")
     upsample = torch.nn.Upsample(scale_factor=2, mode='bilinear')
     with torch.inference_mode():
         with torch.autocast(device_type='cuda', dtype=torch.float32):
@@ -75,6 +81,6 @@ if __name__ == '__main__':
                 output_warped = vae.encode(warped).latent_dist.sample().mul_(0.18215)
 
                 for i in range(output_skeleton.shape[0]):
-                    torch.save(output_skeleton[i:i+1], 'data_binary/pose/{}.pt'.format(names[i][:-4]))
-                    torch.save(output_color[i:i+1], 'data_binary/color/{}.pt'.format(names[i][:-4]))
-                    torch.save(output_warped[i:i+1], 'data_binary/extracted/{}.pt'.format(names[i][:-4]))
+                    torch.save(output_skeleton[i:i+1][0], 'data_binary/pose/{}.pt'.format(names[i][:-4]))
+                    torch.save(output_color[i:i+1][0], 'data_binary/color/{}.pt'.format(names[i][:-4]))
+                    torch.save(output_warped[i:i+1][0], 'data_binary/extracted/{}.pt'.format(names[i][:-4]))

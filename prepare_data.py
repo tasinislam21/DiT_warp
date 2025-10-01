@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 import torch
 from diffusers import AutoencoderKL
 
-device = 'cuda'
+device = 'cpu'
 
 preprocess = transforms.Compose(
     [

@@ -66,7 +66,7 @@ def sample_timestep(data, t):
     sqrt_recip_alphas_t = get_index_from_list(sqrt_recip_alphas, t, data.shape)
     # Call model (current image - noise prediction)
     with torch.cuda.amp.autocast():
-        sample_output = model(torch.cat([data.to(device), sample['pose'].to(device), sample['color'].to(device)],1), t.to(device), sample['label'].to(device))
+        sample_output = model(data, t, sample['pose'], sample['color'], sample['label'])
     model_mean = sqrt_recip_alphas_t * (
             data - betas_t * sample_output / sqrt_one_minus_alphas_cumprod_t
     )
@@ -134,11 +134,9 @@ sample = next(iter(train_dataloader))
 latent_size = int(config.image_size) // 8
 model = DiT_XL_2(input_size=latent_size)
 state_dict = torch.load("DiT-XL-2-256x256.pt")
-model.load_state_dict(state_dict)
+model.load_state_dict(state_dict, strict=False)
 model = apply_lora_to_model(model, verbose=accelerator)
 freeze_non_lora(model)
-model.x_embedder = PatchEmbed(latent_size, 2, 2052, 1152, bias=True)
-model.final_layer =  FinalLayer(1152, 2, 4)
 model.x_embedder.requires_grad_(True)
 model.final_layer.requires_grad_(True)
 if accelerator.is_main_process:
@@ -151,7 +149,6 @@ if accelerator.is_main_process:
       {(100.0 * trainable_params / total_params):.2f}% of all params are trainable.
       """
     )
-#model.load_state_dict(torch.load("model.pt"))
 
 preprocess = transforms.Compose(
     [
@@ -213,7 +210,7 @@ for epoch in range(config.num_epochs):
         noisy_images, noise = forward_diffusion_sample(warped, timesteps)
         with accelerator.accumulate(model):
             # Predict the noise residual
-            noise_pred = model(torch.cat([noisy_images, pose, cloth],1), timesteps, label)
+            noise_pred = model(noisy_images, timesteps, pose, cloth, label)
             loss = F.mse_loss(noise_pred, noise)
             accelerator.backward(loss)
 

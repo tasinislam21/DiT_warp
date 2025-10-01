@@ -18,11 +18,6 @@ preprocess = transforms.Compose(
     ]
 )
 
-model = torch.hub.load(repo_or_dir="facebookresearch/dinov3",
-    model="dinov3_vitl16", pretrained=False)
-model.load_state_dict(torch.load('dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth'))
-model.to(device)
-
 vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-mse").to(device)
 vae.requires_grad_(False)
 
@@ -73,13 +68,9 @@ if __name__ == '__main__':
                 color = data['color'].to(device)
                 warped = data['warped'].to(device)
                 names = data['name']
-
-                feats = model.get_intermediate_layers(skeleton, n=range(9), reshape=True, norm=True)
-                output_skeleton = upsample(feats[-1])
-                feats = model.get_intermediate_layers(color, n=range(9), reshape=True, norm=True)
-                output_color = upsample(feats[-1])
+                output_skeleton = vae.encode(skeleton).latent_dist.sample().mul_(0.18215)
+                output_color = vae.encode(color).latent_dist.sample().mul_(0.18215)
                 output_warped = vae.encode(warped).latent_dist.sample().mul_(0.18215)
-
                 for i in range(output_skeleton.shape[0]):
                     torch.save(output_skeleton[i:i+1][0], 'data_binary/pose/{}.pt'.format(names[i][:-4]))
                     torch.save(output_color[i:i+1][0], 'data_binary/color/{}.pt'.format(names[i][:-4]))

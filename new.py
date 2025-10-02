@@ -154,6 +154,7 @@ if accelerator.is_main_process:
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
     vae.requires_grad_(False)
 
+@torch.no_grad()
 def evaluate(epoch):
     noise = torch.randn([warped.shape[0], 4, 32, 32]).to(device)
     cloth_embed, cloth_latent = warper(cloth, pose, label)
@@ -168,9 +169,6 @@ def evaluate(epoch):
     writer.add_image('diffusion', torchvision.utils.make_grid(images_t), epoch)
     writer.add_image('CA', torchvision.utils.make_grid(ca_warp), epoch)
 
-model.train()
-warper.train()
-
 model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler = accelerator.prepare(
     model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler
 )
@@ -179,6 +177,8 @@ global_step = 0
 
 # Now you train the model
 for epoch in range(config.num_epochs):
+    model.train()
+    warper.train()
     progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch}")
     for step, batch in enumerate(train_dataloader):
@@ -227,8 +227,12 @@ for epoch in range(config.num_epochs):
     # After each epoch you optionally sample some demo images with evaluate() and save the model
     if accelerator.is_main_process:
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
+            model.eval()
+            warper.eval()
+
             print("Evaluating")
-            evaluate(epoch)
+            with torch.no_grad():
+                evaluate(epoch)
             print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:

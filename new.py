@@ -156,8 +156,6 @@ if accelerator.is_main_process:
 
 def evaluate(epoch):
     noise = torch.randn([warped.shape[0], 4, 32, 32]).to(device)
-    model.eval()
-    warper.eval()
     cloth_embed, cloth_latent = warper(cloth, pose, label)
 
     for i in range(0, 1000)[::-1]:
@@ -170,6 +168,8 @@ def evaluate(epoch):
     writer.add_image('diffusion', torchvision.utils.make_grid(images_t), epoch)
     writer.add_image('CA', torchvision.utils.make_grid(ca_warp), epoch)
 
+model.train()
+warper.train()
 
 model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler = accelerator.prepare(
     model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler
@@ -229,8 +229,6 @@ for epoch in range(config.num_epochs):
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
             print("Evaluating")
             evaluate(epoch)
-            warper.train()
-            model.train()
             print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:

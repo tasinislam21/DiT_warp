@@ -13,6 +13,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import math
+
+from black.brackets import Depth
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
 import re
 
@@ -239,16 +241,12 @@ class DiT(nn.Module):
         self.patch_size = patch_size
         self.num_heads = num_heads
 
-        self.noise_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
-        self.cloth_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
-        self.pose_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
-
+        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
-        self.ca_blocks = torch.nn.ModuleList([torch.nn.MultiheadAttention(256, 8) for _ in range(5)])
 
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
@@ -308,22 +306,15 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, noise, timestep, pose, cloth, y):
+    def forward(self, noise, timestep, cloth, y):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
-        pose = self.pose_embedder(pose)
-        cloth = self.cloth_embedder(cloth)
-
-        for block in self.ca_blocks:
-            attn_output, _ = block(cloth.permute(0,2,1), pose.permute(0,2,1), pose.permute(0,2,1))
-            cloth = attn_output.permute(0,2,1)
-
+        noise = self.x_embedder(noise) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         noise = noise + cloth
-        noise = self.noise_embedder(noise) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(timestep)                   # (N, D)
         y = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
@@ -332,6 +323,42 @@ class DiT(nn.Module):
         noise = self.final_layer(noise, c)                # (N, T, patch_size ** 2 * out_channels)
         noise = self.unpatchify(noise)                   # (N, out_channels, H, W)
         return noise
+
+class WarpAdapter(nn.Module):
+    def __init__(self, input_size=32, patch_size=2, in_channels=4, hidden_size=1152, depth=10):
+        super().__init__()
+        self.cloth_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
+        self.pose_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
+        self.y_embedder = LabelEmbedder(1000, hidden_size, 0.1)
+        self.ca_blocks = torch.nn.ModuleList([torch.nn.MultiheadAttention(256, 8) for _ in range(depth)])
+        self.final_layer = FinalLayer(hidden_size, patch_size, in_channels)
+
+    def unpatchify(self, x):
+        """
+        x: (N, T, patch_size**2 * C)
+        imgs: (N, H, W, C)
+        """
+        c = 4
+        p = self.pose_embedder.patch_size[0]
+        h = w = int(x.shape[1] ** 0.5)
+        assert h * w == x.shape[1]
+
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+        return imgs
+
+    def forward(self, cloth, pose, y):
+        cloth_embed = self.cloth_embedder(cloth)
+        pose_embed = self.pose_embedder(pose)
+        y = self.y_embedder(y, self.training)    # (N, D)
+
+        for block in self.ca_blocks:
+            attn_output, _ = block(cloth_embed.permute(0,2,1), pose_embed.permute(0,2,1), pose_embed.permute(0,2,1))
+            cloth_embed = cloth_embed + attn_output.permute(0,2,1)
+        cloth_latent = self.final_layer(cloth_embed, y)
+        cloth_latent = self.unpatchify(cloth_latent)                   # (N, out_channels, H, W)
+        return cloth_embed, cloth_latent
 
 #################################################################################
 #                   Sine/Cosine Positional Embedding Functions                  #

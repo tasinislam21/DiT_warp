@@ -3,16 +3,14 @@ import numpy as np
 import torch.utils.data as data
 import torch
 import os.path as osp
-from torchvision import transforms
-from models import DiT_XL_2, apply_lora_to_model, freeze_non_lora
-from timm.models.vision_transformer import PatchEmbed
-from models import FinalLayer
+from models import DiT_XL_2, apply_lora_to_model, freeze_non_lora, WarpAdapter
 import torch.nn.functional as F
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.models import AutoencoderKL
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
+from models import FinalLayer
 import torchvision
 import os
 
@@ -58,7 +56,7 @@ def get_index_from_list(vals, t, x_shape):
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
 
 @torch.no_grad()
-def sample_timestep(data, t):
+def sample_timestep(data, cloth_embed, t):
     betas_t = get_index_from_list(betas, t, data.shape)
     sqrt_one_minus_alphas_cumprod_t = get_index_from_list(
         sqrt_one_minus_alphas_cumprod, t, data.shape
@@ -66,7 +64,7 @@ def sample_timestep(data, t):
     sqrt_recip_alphas_t = get_index_from_list(sqrt_recip_alphas, t, data.shape)
     # Call model (current image - noise prediction)
     with torch.cuda.amp.autocast():
-        sample_output = model(data, t, sample['pose'], sample['color'], sample['label'])
+        sample_output = model(data, t, cloth_embed, label)
     model_mean = sqrt_recip_alphas_t * (
             data - betas_t * sample_output / sqrt_one_minus_alphas_cumprod_t
     )
@@ -102,14 +100,6 @@ class BaseDataset(data.Dataset):
     def __init__(self, padding = 32):
         super(BaseDataset, self).__init__()
         self.name_list = os.listdir('data_binary/extracted')
-        self.preprocess = transforms.Compose(
-            [
-                transforms.Resize((config.image_size, config.image_size)),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
 
     def __getitem__(self, index):
         file_name = self.name_list[index]
@@ -134,11 +124,13 @@ sample = next(iter(train_dataloader))
 latent_size = int(config.image_size) // 8
 model = DiT_XL_2(input_size=latent_size)
 state_dict = torch.load("DiT-XL-2-256x256.pt")
-model.load_state_dict(state_dict, strict=False)
+model.load_state_dict(state_dict)
 model = apply_lora_to_model(model, verbose=accelerator)
 freeze_non_lora(model)
-model.x_embedder.requires_grad_(True)
+model.final_layer =  FinalLayer(1152, 2, 4)
 model.final_layer.requires_grad_(True)
+warper = WarpAdapter()
+
 if accelerator.is_main_process:
     total_params = sum([p.numel() for p in model.parameters()])
     trainable_params = sum([p.numel() for p in model.parameters() if p.requires_grad])
@@ -150,39 +142,37 @@ if accelerator.is_main_process:
       """
     )
 
-preprocess = transforms.Compose(
-    [
-        transforms.Resize((config.image_size, config.image_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
-    ]
-)
-
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 lr_scheduler = get_cosine_schedule_with_warmup(
     optimizer=optimizer,
     num_warmup_steps=config.lr_warmup_steps,
     num_training_steps=(len(train_dataloader) * config.num_epochs),
 )
+optimizer_warp = torch.optim.AdamW(warper.parameters(), lr=config.learning_rate)
 
 if accelerator.is_main_process:
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
     vae.requires_grad_(False)
 
 def evaluate(epoch):
-    noise = torch.randn([config.train_batch_size, 4, 32, 32]).to(device)
+    noise = torch.randn([warped.shape[0], 4, 32, 32]).to(device)
     model.eval()
+    warper.eval()
+    cloth_embed, cloth_latent = warper(cloth, pose, label)
+
     for i in range(0, 1000)[::-1]:
         t = torch.full((1,), i, device=device).long()
-        noise = sample_timestep(noise, t)
+        noise = sample_timestep(noise, cloth_embed, t)
 
     images_t = vae.decode(noise / 0.18215).sample
-    writer.add_image('Fused', torchvision.utils.make_grid(images_t), epoch)
+    ca_warp = vae.decode(cloth_latent / 0.18215).sample
+
+    writer.add_image('diffusion', torchvision.utils.make_grid(images_t), epoch)
+    writer.add_image('CA', torchvision.utils.make_grid(ca_warp), epoch)
 
 
-model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-    model, optimizer, train_dataloader, lr_scheduler
+model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler = accelerator.prepare(
+    model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler
 )
 
 global_step = 0
@@ -198,19 +188,24 @@ for epoch in range(config.num_epochs):
         label = batch["label"]
         # Sample noise to add to the images
         bs = warped.shape[0]
-
         # Sample a random timestep for each image
         timesteps = torch.randint(
             0, 1000, (bs,), device=warped.device,
             dtype=torch.long
         )
-
+        with accelerator.accumulate(warper):
+            cloth_embed, cloth_latent = warper(cloth, pose, label)
+            loss_warp = F.mse_loss(cloth_latent, warped)
+            accelerator.backward(loss_warp)
+            optimizer_warp.step()
+            optimizer.zero_grad()
         # Add noise to the clean images according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
+        cloth_embed = cloth_embed.detach()
         noisy_images, noise = forward_diffusion_sample(warped, timesteps)
         with accelerator.accumulate(model):
             # Predict the noise residual
-            noise_pred = model(noisy_images, timesteps, pose, cloth, label)
+            noise_pred = model(noisy_images, timesteps, cloth_embed, label)
             loss = F.mse_loss(noise_pred, noise)
             accelerator.backward(loss)
 
@@ -225,6 +220,8 @@ for epoch in range(config.num_epochs):
         progress_bar.set_postfix(**logs)
         if accelerator.is_main_process and global_step % 100 == 0:
             writer.add_scalar('noise', loss, global_step)
+            writer.add_scalar('ca_warp', loss_warp, global_step)
+
         global_step += 1
 
     # After each epoch you optionally sample some demo images with evaluate() and save the model
@@ -232,6 +229,7 @@ for epoch in range(config.num_epochs):
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
             print("Evaluating")
             evaluate(epoch)
+            warper.train()
             model.train()
             print("Evaluation Finished")
 

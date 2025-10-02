@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 import torch
 from diffusers import AutoencoderKL
 
-device = 'cpu'
+device = 'cuda'
 
 preprocess = transforms.Compose(
     [
@@ -62,7 +62,7 @@ if __name__ == '__main__':
         os.makedirs("data_binary/extracted")
     upsample = torch.nn.Upsample(scale_factor=2, mode='bilinear')
     with torch.inference_mode():
-        with torch.autocast(device_type='cuda', dtype=torch.float32):
+        with torch.autocast(device_type=device, dtype=torch.float32):
             for data in tqdm.tqdm(train_dataloader):
                 skeleton = data['skeleton'].to(device)
                 color = data['color'].to(device)
@@ -72,6 +72,6 @@ if __name__ == '__main__':
                 output_color = vae.encode(color).latent_dist.sample().mul_(0.18215)
                 output_warped = vae.encode(warped).latent_dist.sample().mul_(0.18215)
                 for i in range(output_skeleton.shape[0]):
-                    torch.save(output_skeleton[i:i+1][0], 'data_binary/pose/{}.pt'.format(names[i][:-4]))
-                    torch.save(output_color[i:i+1][0], 'data_binary/color/{}.pt'.format(names[i][:-4]))
-                    torch.save(output_warped[i:i+1][0], 'data_binary/extracted/{}.pt'.format(names[i][:-4]))
+                    torch.save(output_skeleton[i], 'data_binary/pose/{}.pt'.format(names[i][:-4]))
+                    torch.save(output_color[i], 'data_binary/color/{}.pt'.format(names[i][:-4]))
+                    torch.save(output_warped[i], 'data_binary/extracted/{}.pt'.format(names[i][:-4]))

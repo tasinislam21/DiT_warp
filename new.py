@@ -63,7 +63,7 @@ def sample_timestep(data, cloth_embed, t):
     )
     sqrt_recip_alphas_t = get_index_from_list(sqrt_recip_alphas, t, data.shape)
     # Call model (current image - noise prediction)
-    with torch.cuda.amp.autocast():
+    with torch.no_grad():
         sample_output = model(data, t, cloth_embed, label)
     model_mean = sqrt_recip_alphas_t * (
             data - betas_t * sample_output / sqrt_one_minus_alphas_cumprod_t
@@ -153,12 +153,14 @@ optimizer_warp = torch.optim.AdamW(warper.parameters(), lr=config.learning_rate)
 if accelerator.is_main_process:
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
     vae.requires_grad_(False)
+    vae.eval()
 
 @torch.no_grad()
 def evaluate(epoch):
     noise = torch.randn([warped.shape[0], 4, 32, 32]).to(device)
     cloth_embed, cloth_latent = warper(cloth, pose, label)
-
+    model.eval()
+    warper.eval()
     for i in range(0, 1000)[::-1]:
         t = torch.full((1,), i, device=device).long()
         noise = sample_timestep(noise, cloth_embed, t)
@@ -177,8 +179,6 @@ global_step = 0
 
 # Now you train the model
 for epoch in range(config.num_epochs):
-    model.train()
-    warper.train()
     progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch}")
     for step, batch in enumerate(train_dataloader):
@@ -227,12 +227,11 @@ for epoch in range(config.num_epochs):
     # After each epoch you optionally sample some demo images with evaluate() and save the model
     if accelerator.is_main_process:
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-            model.eval()
-            warper.eval()
 
             print("Evaluating")
-            with torch.no_grad():
-                evaluate(epoch)
+            evaluate(epoch)
+            model.train()
+            warper.train()
             print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:

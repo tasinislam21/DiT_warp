@@ -354,7 +354,7 @@ class WarpAdapter(nn.Module):
         y = self.y_embedder(y, self.training)    # (N, D)
 
         for block in self.ca_blocks:
-            attn_output, _ = block(cloth_embed.permute(0,2,1), pose_embed.permute(0,2,1), pose_embed.permute(0,2,1))
+            attn_output, _ = block(pose_embed.permute(0,2,1), cloth_embed.permute(0,2,1), cloth_embed.permute(0,2,1))
             cloth_embed = cloth_embed + attn_output.permute(0,2,1)
         cloth_latent = self.final_layer(cloth_embed, y)
         cloth_latent = self.unpatchify(cloth_latent)                   # (N, out_channels, H, W)

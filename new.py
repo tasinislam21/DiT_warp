@@ -17,7 +17,7 @@ import os
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 32
+    train_batch_size = 1
     num_epochs = 1000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
@@ -198,7 +198,7 @@ for epoch in range(config.num_epochs):
             loss_warp = F.mse_loss(cloth_latent, warped)
             accelerator.backward(loss_warp)
             optimizer_warp.step()
-            optimizer.zero_grad()
+            optimizer_warp.zero_grad()
         # Add noise to the clean images according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
         cloth_embed = cloth_embed.detach()

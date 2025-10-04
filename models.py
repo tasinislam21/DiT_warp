@@ -325,7 +325,7 @@ class DiT(nn.Module):
         return noise
 
 class WarpAdapter(nn.Module):
-    def __init__(self, input_size=32, patch_size=2, in_channels=4, hidden_size=1152, depth=20):
+    def __init__(self, input_size=32, patch_size=2, in_channels=4, hidden_size=1152, depth=30):
         super().__init__()
         self.cloth_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.pose_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)

@@ -114,7 +114,6 @@ for epoch in range(config.num_epochs):
 
             print("Evaluating")
             evaluate(epoch)
-            warper.train()
             print("Evaluation Finished")
 
         if (epoch + 1) % 10 == 0 or epoch == config.num_epochs - 1:

@@ -15,7 +15,7 @@ import os
 class TrainingConfig:
     image_size = 256  # the generated image resolution
     train_batch_size = 32
-    num_epochs = 300
+    num_epochs = 1000
     save_image_epochs = 10
     output_dir = "ddpm-butterflies-128"
     mixed_precision = "fp16"  # `no` for float32, `fp16` for automatic mixed precision

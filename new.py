@@ -3,7 +3,7 @@ import numpy as np
 import torch.utils.data as data
 import torch
 import os.path as osp
-from models import DiT_XL_2, apply_lora_to_model, freeze_non_lora, WarpAdapter
+from MMDiT import MMDiT
 import torch.nn.functional as F
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.models import AutoencoderKL
@@ -121,26 +121,7 @@ class BaseDataset(data.Dataset):
 train_dataloader = torch.utils.data.DataLoader(BaseDataset(), batch_size=config.train_batch_size, shuffle=True)
 sample = next(iter(train_dataloader))
 
-latent_size = int(config.image_size) // 8
-model = DiT_XL_2(input_size=latent_size)
-state_dict = torch.load("DiT-XL-2-256x256.pt")
-model.load_state_dict(state_dict)
-model = apply_lora_to_model(model, verbose=accelerator)
-freeze_non_lora(model)
-model.final_layer =  FinalLayer(1152, 2, 4)
-model.final_layer.requires_grad_(True)
-warper = WarpAdapter()
-
-if accelerator.is_main_process:
-    total_params = sum([p.numel() for p in model.parameters()])
-    trainable_params = sum([p.numel() for p in model.parameters() if p.requires_grad])
-    print(
-        f"""
-      {total_params} total params,
-      {trainable_params}" trainable params,
-      {(100.0 * trainable_params / total_params):.2f}% of all params are trainable.
-      """
-    )
+model = MMDiT(depth=20)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 lr_scheduler = get_cosine_schedule_with_warmup(
@@ -148,7 +129,6 @@ lr_scheduler = get_cosine_schedule_with_warmup(
     num_warmup_steps=config.lr_warmup_steps,
     num_training_steps=(len(train_dataloader) * config.num_epochs),
 )
-optimizer_warp = torch.optim.AdamW(warper.parameters(), lr=config.learning_rate)
 
 if accelerator.is_main_process:
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)

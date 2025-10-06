@@ -1,14 +1,13 @@
 from __future__ import annotations
-from typing import Tuple
-
+from models import get_2d_sincos_pos_embed
 import torch
 from torch import nn
 from torch import Tensor
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 from timm.models.vision_transformer import PatchEmbed
-
-from einops import rearrange, repeat, pack, unpack
+from models import TimestepEmbedder, FinalLayer
+from einops import  repeat, pack, unpack
 from einops.layers.torch import Rearrange
 
 from x_transformers.attend import Attend
@@ -374,6 +373,8 @@ class MMDiT(Module):
         self.blocks = ModuleList([])
         self.noise_embedder = PatchEmbed(32, 2, 4, 1152, bias=True)
         self.cond_embedder = PatchEmbed(32, 2, 8, 1152, bias=True)
+        self.pos_embed = nn.Parameter(torch.zeros(1, 2, 1152), requires_grad=False)
+        self.t_embedder = TimestepEmbedder(1152)
 
         for _ in range(depth):
             block = MMDiTBlock(
@@ -385,6 +386,46 @@ class MMDiT(Module):
             self.blocks.append(block)
 
         self.norm = RMSNorm(dim_image) if final_norm else nn.Identity()
+        self.final_layer = FinalLayer(1152, 2, 4)
+        self.initialize_weights()
+        self.init_weights()
+
+    def initialize_weights(self):
+        # Initialize transformer layers:
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+
+        # Initialize (and freeze) pos_embed by sin-cos embedding:
+        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.noise_embedder.num_patches ** 0.5))
+        self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+
+        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
+        w = self.noise_embedder.proj.weight.data
+        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        nn.init.constant_(self.noise_embedder.proj.bias, 0)
+
+        w = self.noise_embedder.proj.weight.data
+        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        nn.init.constant_(self.cond_embedder.proj.bias, 0)
+
+        # Initialize timestep embedding MLP:
+        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
+
+        # Zero-out adaLN modulation layers in DiT blocks:
+        for block in self.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
+        # Zero-out output layers:
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.constant_(self.final_layer.linear.bias, 0)
 
     def forward(
         self,
@@ -402,6 +443,7 @@ class MMDiT(Module):
 
         image_tokens = self.noise_embedder(image_tokens)
         text_tokens = self.cond_embedder(text_tokens)
+        time_cond = self.t_embedder(time_cond)
 
         text_tokens = self.expand_streams(text_tokens)
         image_tokens = self.expand_streams(image_tokens)
@@ -420,9 +462,8 @@ class MMDiT(Module):
         if self.has_register_tokens:
             _, image_tokens = unpack(image_tokens, packed_shape, 'b * d')
 
-        text_tokens = self.reduce_streams(text_tokens)
+        #text_tokens = self.reduce_streams(text_tokens)
         image_tokens = self.reduce_streams(image_tokens)
-
         image_tokens = self.norm(image_tokens)
 
-        return text_tokens, image_tokens
+        return image_tokens

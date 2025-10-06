@@ -165,7 +165,6 @@ for epoch in range(config.num_epochs):
         warped = batch["warped"]
         pose = batch["pose"]
         cloth = batch["color"]
-        label = batch["label"]
         # Sample noise to add to the images
         bs = warped.shape[0]
         # Sample a random timestep for each image

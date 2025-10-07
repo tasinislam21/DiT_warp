@@ -170,6 +170,15 @@ for epoch in range(config.num_epochs):
         # Sample noise to add to the images
         bs = warped.shape[0]
         # Sample a random timestep for each image
+
+        if accelerator.is_main_process:
+            print("Evaluating")
+            model.eval()
+            with torch.no_grad():
+                evaluate(epoch)
+            model.train()
+            print("Evaluation Finished")
+
         timesteps = torch.randint(
             0, 1000, (bs,), device=warped.device,
             dtype=torch.long

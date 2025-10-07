@@ -16,7 +16,7 @@ import os
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 1
+    train_batch_size = 32
     num_epochs = 1000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
@@ -119,7 +119,6 @@ class BaseDataset(data.Dataset):
         return len(self.name_list)
 
 train_dataloader = torch.utils.data.DataLoader(BaseDataset(), batch_size=config.train_batch_size, shuffle=True)
-sample = next(iter(train_dataloader))
 
 model = MMDiT(depth=20, dim_image= 1152, dim_text = 1152, dim_cond = 1152)
 

@@ -13,7 +13,9 @@ from tensorboardX import SummaryWriter
 import torchvision
 import os
 import argparse
+from accelerate.utils import DistributedDataParallelKwargs
 
+kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 parser = argparse.ArgumentParser()
 parser.add_argument('-b', '--batch', type=int, default=32)      # option that takes a value
 args = parser.parse_args()
@@ -39,6 +41,7 @@ accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         project_dir=os.path.join(config.output_dir, "logs"),
+        kwargs_handlers=[kwargs]
     )
 
 device = accelerator.device

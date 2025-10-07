@@ -6,3 +6,5 @@ dataset
 runs
 *.pth
 __pycache__
+.ipyb_checkpoints
+.idea

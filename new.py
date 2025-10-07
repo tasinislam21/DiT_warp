@@ -78,7 +78,7 @@ def sample_timestep(image, t):
     model_mean = sqrt_recip_alphas_t * (
             image - betas_t * sample_output / sqrt_one_minus_alphas_cumprod_t
     )
-    if t.item() == 0:
+    if t[0:1].item() == 0:
         return model_mean
     else:
         noise = torch.randn_like(image)
@@ -170,14 +170,6 @@ for epoch in range(config.num_epochs):
         # Sample noise to add to the images
         bs = warped.shape[0]
         # Sample a random timestep for each image
-
-        if accelerator.is_main_process:
-            print("Evaluating")
-            model.eval()
-            with torch.no_grad():
-                evaluate(epoch)
-            model.train()
-            print("Evaluation Finished")
 
         timesteps = torch.randint(
             0, 1000, (bs,), device=warped.device,

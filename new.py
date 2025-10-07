@@ -10,7 +10,6 @@ from diffusers.models import AutoencoderKL
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
-from models import FinalLayer
 import torchvision
 import os
 
@@ -56,23 +55,24 @@ def get_index_from_list(vals, t, x_shape):
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
 
 @torch.no_grad()
-def sample_timestep(data, cloth_embed, t):
-    betas_t = get_index_from_list(betas, t, data.shape)
+def sample_timestep(image, t):
+    betas_t = get_index_from_list(betas, t, image.shape)
     sqrt_one_minus_alphas_cumprod_t = get_index_from_list(
-        sqrt_one_minus_alphas_cumprod, t, data.shape
+        sqrt_one_minus_alphas_cumprod, t, image.shape
     )
-    sqrt_recip_alphas_t = get_index_from_list(sqrt_recip_alphas, t, data.shape)
+    sqrt_recip_alphas_t = get_index_from_list(sqrt_recip_alphas, t, image.shape)
     # Call model (current image - noise prediction)
     with torch.no_grad():
-        sample_output = model(data, t, cloth_embed, label)
+        sample_output = model(image_tokens=image, text_tokens=torch.cat([pose, cloth], 1), time_cond=t)
+
     model_mean = sqrt_recip_alphas_t * (
-            data - betas_t * sample_output / sqrt_one_minus_alphas_cumprod_t
+            image - betas_t * sample_output / sqrt_one_minus_alphas_cumprod_t
     )
     if t.item() == 0:
         return model_mean
     else:
-        noise = torch.randn_like(data)
-        posterior_variance_t = get_index_from_list(posterior_variance, t, data.shape)
+        noise = torch.randn_like(image)
+        posterior_variance_t = get_index_from_list(posterior_variance, t, image.shape)
         return model_mean + torch.sqrt(posterior_variance_t) * noise
     
 def forward_diffusion_sample(x_0, t):
@@ -121,7 +121,7 @@ class BaseDataset(data.Dataset):
 train_dataloader = torch.utils.data.DataLoader(BaseDataset(), batch_size=config.train_batch_size, shuffle=True)
 sample = next(iter(train_dataloader))
 
-model = MMDiT(depth=20)
+model = MMDiT(depth=20, dim_image= 1152, dim_text = 1152, dim_cond = 1152)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 lr_scheduler = get_cosine_schedule_with_warmup(
@@ -138,21 +138,14 @@ if accelerator.is_main_process:
 @torch.no_grad()
 def evaluate(epoch):
     noise = torch.randn([warped.shape[0], 4, 32, 32]).to(device)
-    cloth_embed, cloth_latent = warper(cloth, pose, label)
-    model.eval()
-    warper.eval()
     for i in range(0, 1000)[::-1]:
-        t = torch.full((1,), i, device=device).long()
-        noise = sample_timestep(noise, cloth_embed, t)
-
+        t = torch.full((warped.shape[0],), i, device=device).long()
+        noise = sample_timestep(noise, t)
     images_t = vae.decode(noise / 0.18215).sample
-    ca_warp = vae.decode(cloth_latent / 0.18215).sample
-
     writer.add_image('diffusion', torchvision.utils.make_grid(images_t), epoch)
-    writer.add_image('CA', torchvision.utils.make_grid(ca_warp), epoch)
 
-model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler = accelerator.prepare(
-    model, warper, optimizer, optimizer_warp, train_dataloader, lr_scheduler
+model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+    model,  optimizer, train_dataloader, lr_scheduler
 )
 
 global_step = 0
@@ -172,19 +165,10 @@ for epoch in range(config.num_epochs):
             0, 1000, (bs,), device=warped.device,
             dtype=torch.long
         )
-        with accelerator.accumulate(warper):
-            cloth_embed, cloth_latent = warper(cloth, pose, label)
-            loss_warp = F.mse_loss(cloth_latent, warped)
-            accelerator.backward(loss_warp)
-            optimizer_warp.step()
-            optimizer_warp.zero_grad()
-        # Add noise to the clean images according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        cloth_embed = cloth_embed.detach()
         noisy_images, noise = forward_diffusion_sample(warped, timesteps)
         with accelerator.accumulate(model):
             # Predict the noise residual
-            noise_pred = model(noisy_images, timesteps, cloth_embed, label)
+            noise_pred = model(image_tokens=noisy_images, text_tokens=torch.cat([pose, cloth], 1), time_cond = timesteps)
             loss = F.mse_loss(noise_pred, noise)
             accelerator.backward(loss)
 
@@ -199,18 +183,16 @@ for epoch in range(config.num_epochs):
         progress_bar.set_postfix(**logs)
         if accelerator.is_main_process and global_step % 100 == 0:
             writer.add_scalar('noise', loss, global_step)
-            writer.add_scalar('ca_warp', loss_warp, global_step)
-
         global_step += 1
 
     # After each epoch you optionally sample some demo images with evaluate() and save the model
     if accelerator.is_main_process:
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-
             print("Evaluating")
-            evaluate(epoch)
+            model.eval()
+            with torch.no_grad():
+                evaluate(epoch)
             model.train()
-            warper.train()
             print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:

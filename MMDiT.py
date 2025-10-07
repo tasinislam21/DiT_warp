@@ -373,7 +373,9 @@ class MMDiT(Module):
         self.blocks = ModuleList([])
         self.noise_embedder = PatchEmbed(32, 2, 4, 1152, bias=True)
         self.cond_embedder = PatchEmbed(32, 2, 8, 1152, bias=True)
-        self.pos_embed = nn.Parameter(torch.zeros(1, 2, 1152), requires_grad=False)
+        num_patches = self.noise_embedder.num_patches
+        # Will use fixed sin-cos embedding:
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, 1152), requires_grad=False)
         self.t_embedder = TimestepEmbedder(1152)
 
         for _ in range(depth):
@@ -388,7 +390,6 @@ class MMDiT(Module):
         self.norm = RMSNorm(dim_image) if final_norm else nn.Identity()
         self.final_layer = FinalLayer(1152, 2, 4)
         self.initialize_weights()
-        self.init_weights()
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -408,7 +409,7 @@ class MMDiT(Module):
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.noise_embedder.proj.bias, 0)
 
-        w = self.noise_embedder.proj.weight.data
+        w = self.cond_embedder.proj.weight.data
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.cond_embedder.proj.bias, 0)
 
@@ -416,16 +417,23 @@ class MMDiT(Module):
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
-        # Zero-out adaLN modulation layers in DiT blocks:
-        for block in self.blocks:
-            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
+
+    def unpatchify(self, x):
+        c = 4
+        p = self.noise_embedder.patch_size[0]
+        h = w = int(x.shape[1] ** 0.5)
+        assert h * w == x.shape[1]
+
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+        return imgs
 
     def forward(
         self,
@@ -441,8 +449,8 @@ class MMDiT(Module):
             register_tokens = repeat(self.register_tokens, 'n d -> b n d', b = image_tokens.shape[0])
             image_tokens, packed_shape = pack([register_tokens, image_tokens], 'b * d')
 
-        image_tokens = self.noise_embedder(image_tokens)
-        text_tokens = self.cond_embedder(text_tokens)
+        image_tokens = self.noise_embedder(image_tokens) + self.pos_embed
+        text_tokens = self.cond_embedder(text_tokens) + self.pos_embed
         time_cond = self.t_embedder(time_cond)
 
         text_tokens = self.expand_streams(text_tokens)
@@ -462,8 +470,8 @@ class MMDiT(Module):
         if self.has_register_tokens:
             _, image_tokens = unpack(image_tokens, packed_shape, 'b * d')
 
-        #text_tokens = self.reduce_streams(text_tokens)
         image_tokens = self.reduce_streams(image_tokens)
         image_tokens = self.norm(image_tokens)
-
+        image_tokens = self.final_layer(image_tokens, time_cond)                # (N, T, patch_size ** 2 * out_channels)
+        image_tokens = self.unpatchify(image_tokens)                   # (N, out_channels, H, W)
         return image_tokens

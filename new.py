@@ -12,11 +12,16 @@ from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 import torchvision
 import os
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-b', '--batch', type=int, default=32)      # option that takes a value
+args = parser.parse_args()
 
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 32
+    train_batch_size = args.batch
     num_epochs = 1000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4

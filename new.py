@@ -18,6 +18,8 @@ from accelerate.utils import DistributedDataParallelKwargs
 kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 parser = argparse.ArgumentParser()
 parser.add_argument('-b', '--batch', type=int, default=32)      # option that takes a value
+parser.add_argument('-d', '--depth', type=int, default=20)      # option that takes a value
+
 args = parser.parse_args()
 
 @dataclass
@@ -128,7 +130,7 @@ class BaseDataset(data.Dataset):
 
 train_dataloader = torch.utils.data.DataLoader(BaseDataset(), batch_size=config.train_batch_size, shuffle=True)
 
-model = MMDiT(depth=20, dim_image= 1152, dim_text = 1152, dim_cond = 1152)
+model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 lr_scheduler = get_cosine_schedule_with_warmup(

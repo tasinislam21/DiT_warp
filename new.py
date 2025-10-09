@@ -198,13 +198,13 @@ for epoch in range(config.num_epochs):
 
     # After each epoch you optionally sample some demo images with evaluate() and save the model
     if accelerator.is_main_process:
-        if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-            print("Evaluating")
-            model.eval()
-            with torch.no_grad():
-                evaluate(epoch)
-            model.train()
-            print("Evaluation Finished")
+        # if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
+        #     print("Evaluating")
+        #     model.eval()
+        #     with torch.no_grad():
+        #         evaluate(epoch)
+        #     model.train()
+        #     print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
             #pipeline.save_pretrained(config.output_dir)

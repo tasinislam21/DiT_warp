@@ -143,8 +143,6 @@ if accelerator.is_main_process:
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
     vae.requires_grad_(False)
     vae.eval()
-else:
-    accelerator.wait_for_everyone()
 
 @torch.no_grad()
 def evaluate(epoch):

@@ -143,6 +143,8 @@ if accelerator.is_main_process:
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
     vae.requires_grad_(False)
     vae.eval()
+else:
+    accelerator.wait_for_everyone()
 
 @torch.no_grad()
 def evaluate(epoch):
@@ -196,7 +198,6 @@ for epoch in range(config.num_epochs):
         global_step += 1
 
     # After each epoch you optionally sample some demo images with evaluate() and save the model
-    accelerator.wait_for_everyone() # wait for everyone before evaluating
     if accelerator.is_main_process:
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
             print("Evaluating")
@@ -209,3 +210,5 @@ for epoch in range(config.num_epochs):
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
             #pipeline.save_pretrained(config.output_dir)
             torch.save(model.state_dict(), os.path.join(config.output_dir, "model.pt"))
+    else:
+        accelerator.wait_for_everyone()

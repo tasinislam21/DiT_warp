@@ -40,9 +40,6 @@ class TrainingConfig:
 config = TrainingConfig()
 
 accelerator = Accelerator(
-        mixed_precision=config.mixed_precision,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        project_dir=os.path.join(config.output_dir, "logs"),
         kwargs_handlers=[kwargs]
     )
 
@@ -129,7 +126,6 @@ class BaseDataset(data.Dataset):
         return len(self.name_list)
 
 train_dataloader = torch.utils.data.DataLoader(BaseDataset(), batch_size=config.train_batch_size, shuffle=True)
-
 model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
@@ -143,12 +139,11 @@ if accelerator.is_main_process:
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
     vae.requires_grad_(False)
     vae.eval()
-accelerator.wait_for_everyone()
 
 @torch.no_grad()
 def evaluate(epoch):
     noise = torch.randn([warped.shape[0], 4, 32, 32]).to(device)
-    for i in range(0, 1000)[::-1]:
+    for i in range(0, T)[::-1]:
         t = torch.full((warped.shape[0],), i, device=device).long()
         noise = sample_timestep(noise, t)
     images_t = vae.decode(noise / 0.18215).sample
@@ -157,6 +152,7 @@ def evaluate(epoch):
 model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
     model,  optimizer, train_dataloader, lr_scheduler
 )
+model.train()
 
 global_step = 0
 
@@ -173,21 +169,17 @@ for epoch in range(config.num_epochs):
         # Sample a random timestep for each image
 
         timesteps = torch.randint(
-            0, 1000, (bs,), device=warped.device,
+            0, T, (bs,), device=warped.device,
             dtype=torch.long
         )
         noisy_images, noise = forward_diffusion_sample(warped, timesteps)
-        with accelerator.accumulate(model):
-            # Predict the noise residual
-            noise_pred = model(image_tokens=noisy_images, text_tokens=torch.cat([pose, cloth], 1), time_cond = timesteps)
-            loss = F.mse_loss(noise_pred, noise)
-            accelerator.backward(loss)
-
-            if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
+        # Predict the noise residual
+        noise_pred = model(image_tokens=noisy_images, text_tokens=torch.cat([pose, cloth], 1), time_cond = timesteps)
+        loss = F.mse_loss(noise_pred, noise)
+        accelerator.backward(loss)
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
 
         progress_bar.update(1)
         logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "step": global_step}
@@ -198,15 +190,14 @@ for epoch in range(config.num_epochs):
 
     # After each epoch you optionally sample some demo images with evaluate() and save the model
     if accelerator.is_main_process:
-        # if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-        #     print("Evaluating")
-        #     model.eval()
-        #     with torch.no_grad():
-        #         evaluate(epoch)
-        #     model.train()
-        #     print("Evaluation Finished")
+        if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
+            print("Evaluating")
+            model.eval()
+            with torch.no_grad():
+                evaluate(epoch)
+            model.train()
+            print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
             #pipeline.save_pretrained(config.output_dir)
             torch.save(model.state_dict(), os.path.join(config.output_dir, "model.pt"))
-    accelerator.wait_for_everyone()

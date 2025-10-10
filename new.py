@@ -158,47 +158,50 @@ global_step = 0
 
 # Now you train the model
 for epoch in range(config.num_epochs):
-    progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
-    progress_bar.set_description(f"Epoch {epoch}")
-    accelerator.wait_for_everyone()
-    for step, batch in enumerate(train_dataloader):
-        warped = batch["warped"]
-        pose = batch["pose"]
-        cloth = batch["color"]
-        # Sample noise to add to the images
-        bs = warped.shape[0]
-        # Sample a random timestep for each image
+    if accelerator.is_main_process:
+        progress_bar = tqdm(total=len(train_dataloader), desc=f"Epoch {epoch}")
+    else:
+        progress_bar = None
 
-        timesteps = torch.randint(
-            0, T, (bs,), device=warped.device,
-            dtype=torch.long
-        )
+    for step, batch in enumerate(train_dataloader):
+        warped, pose, cloth = batch["warped"], batch["pose"], batch["color"]
+        bs = warped.size(0)
+        timesteps = torch.randint(0, T, (bs,), device=warped.device)
         noisy_images, noise = forward_diffusion_sample(warped, timesteps)
-        # Predict the noise residual
-        noise_pred = model(image_tokens=noisy_images, text_tokens=torch.cat([pose, cloth], 1), time_cond = timesteps)
+
+        noise_pred = model(
+            image_tokens=noisy_images,
+            text_tokens=torch.cat([pose, cloth], dim=1),
+            time_cond=timesteps
+        )
         loss = F.mse_loss(noise_pred, noise)
         accelerator.backward(loss)
         optimizer.step()
         lr_scheduler.step()
         optimizer.zero_grad()
 
-        progress_bar.update(1)
-        logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "step": global_step}
-        progress_bar.set_postfix(**logs)
-        if accelerator.is_main_process and global_step % 100 == 0:
-            writer.add_scalar('noise', loss, global_step)
-        global_step += 1
+        if accelerator.is_main_process:
+            progress_bar.update(1)
+            progress_bar.set_postfix(loss=loss.item(), lr=lr_scheduler.get_last_lr()[0])
 
-    # After each epoch you optionally sample some demo images with evaluate() and save the model
+        if accelerator.sync_gradients:
+            global_step += 1
+            if accelerator.is_main_process and global_step % 100 == 0:
+                writer.add_scalar("noise", loss.item(), global_step)
+
+    # 🔹 Sync all processes before evaluation
+    accelerator.wait_for_everyone()
+
+    # 🔹 Only main process runs evaluation — others idle at next barrier
     if accelerator.is_main_process:
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-            print("Evaluating")
             model.eval()
             with torch.no_grad():
                 evaluate(epoch)
             model.train()
-            print("Evaluation Finished")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
-            #pipeline.save_pretrained(config.output_dir)
-            torch.save(model.state_dict(), os.path.join(config.output_dir, "model.pt"))
+            accelerator.save_state(config.output_dir)
+
+    # 🔹 Wait again so all ranks resume together
+    accelerator.wait_for_everyone()

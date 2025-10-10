@@ -7,19 +7,18 @@ from MMDiT import MMDiT
 import torch.nn.functional as F
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.models import AutoencoderKL
-from accelerate import Accelerator
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
+import torch.distributed as dist
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 import torchvision
 import os
 import argparse
-from accelerate.utils import DistributedDataParallelKwargs
 
-kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 parser = argparse.ArgumentParser()
 parser.add_argument('-b', '--batch', type=int, default=32)      # option that takes a value
 parser.add_argument('-d', '--depth', type=int, default=20)      # option that takes a value
-
 args = parser.parse_args()
 
 @dataclass
@@ -39,14 +38,19 @@ class TrainingConfig:
 
 config = TrainingConfig()
 
-accelerator = Accelerator(
-        kwargs_handlers=[kwargs]
-    )
+def setup():
+    # Initialize the process group
+    dist.init_process_group(backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    return local_rank
 
-device = accelerator.device
+def cleanup():
+    dist.destroy_process_group()
 
-if accelerator.is_main_process:
-    writer = SummaryWriter('runs')
+def cleanup():
+    # Destroy the process group
+    dist.destroy_process_group()
 
 def cosine_beta_schedule(timesteps, start=0.0001, end=0.02):
     betas = []
@@ -125,8 +129,17 @@ class BaseDataset(data.Dataset):
     def __len__(self):
         return 10 #len(self.name_list)
 
-train_dataloader = torch.utils.data.DataLoader(BaseDataset(), batch_size=config.train_batch_size, shuffle=True)
-model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152)
+dataset_obj = BaseDataset()
+sampler = DistributedSampler(dataset_obj, shuffle=False)
+train_dataloader = torch.utils.data.DataLoader(dataset_obj, batch_size=config.train_batch_size, sampler=sampler)
+
+local_rank = setup()
+
+if local_rank == 0:
+    writer = SummaryWriter('runs')
+
+model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152).to(local_rank)
+model = DDP(model, device_ids=[local_rank])
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 lr_scheduler = get_cosine_schedule_with_warmup(
@@ -135,65 +148,59 @@ lr_scheduler = get_cosine_schedule_with_warmup(
     num_training_steps=(len(train_dataloader) * config.num_epochs),
 )
 
-if accelerator.is_main_process:
-    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(device)
+if local_rank == 0:
+    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").to(local_rank)
     vae.requires_grad_(False)
     vae.eval()
 
 @torch.no_grad()
 def evaluate(epoch):
-    noise = torch.randn([warped.shape[0], 4, 32, 32]).to(device)
+    noise = torch.randn([warped.shape[0], 4, 32, 32]).to(local_rank)
     for i in range(0, T)[::-1]:
-        t = torch.full((warped.shape[0],), i, device=device).long()
+        t = torch.full((warped.shape[0],), i, device=local_rank).long()
         noise = sample_timestep(noise, t)
     images_t = vae.decode(noise / 0.18215).sample
     writer.add_image('diffusion', torchvision.utils.make_grid(images_t), epoch)
 
-model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-    model,  optimizer, train_dataloader, lr_scheduler
-)
 model.train()
-
 global_step = 0
 
 # Now you train the model
 for epoch in range(config.num_epochs):
-    if accelerator.is_main_process:
+    if local_rank == 0:
         progress_bar = tqdm(total=len(train_dataloader), desc=f"Epoch {epoch}")
     else:
         progress_bar = None
 
     for step, batch in enumerate(train_dataloader):
-        warped, pose, cloth = batch["warped"], batch["pose"], batch["color"]
+        warped, pose, cloth = batch["warped"].to(local_rank), batch["pose"].to(local_rank), batch["color"].to(local_rank)
         bs = warped.size(0)
         timesteps = torch.randint(0, T, (bs,), device=warped.device)
         noisy_images, noise = forward_diffusion_sample(warped, timesteps)
 
+        optimizer.zero_grad()
         noise_pred = model(
             image_tokens=noisy_images,
             text_tokens=torch.cat([pose, cloth], dim=1),
             time_cond=timesteps
         )
         loss = F.mse_loss(noise_pred, noise)
-        accelerator.backward(loss)
+        loss.backward()
         optimizer.step()
         lr_scheduler.step()
-        optimizer.zero_grad()
 
-        if accelerator.is_main_process:
+        if local_rank == 0:
             progress_bar.update(1)
             progress_bar.set_postfix(loss=loss.item(), lr=lr_scheduler.get_last_lr()[0])
 
-        if accelerator.sync_gradients:
-            global_step += 1
-            if accelerator.is_main_process and global_step % 100 == 0:
-                writer.add_scalar("noise", loss.item(), global_step)
+        global_step += 1
+        if local_rank == 0 and global_step % 100 == 0:
+            writer.add_scalar("noise", loss.item(), global_step)
 
     # 🔹 Sync all processes before evaluation
-    accelerator.wait_for_everyone()
 
     # 🔹 Only main process runs evaluation — others idle at next barrier
-    if accelerator.is_main_process:
+    if local_rank == 0:
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
             model.eval()
             with torch.no_grad():
@@ -201,7 +208,4 @@ for epoch in range(config.num_epochs):
             model.train()
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
-            accelerator.save_state(config.output_dir)
-
-    # 🔹 Wait again so all ranks resume together
-    accelerator.wait_for_everyone()
+            model.module.save_state(config.output_dir)

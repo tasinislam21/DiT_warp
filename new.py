@@ -138,7 +138,7 @@ if local_rank == 0:
     writer = SummaryWriter('runs')
 
 model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152).to(local_rank)
-model = DDP(model, device_ids=[local_rank])
+model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 lr_scheduler = get_cosine_schedule_with_warmup(

@@ -209,4 +209,5 @@ for epoch in range(config.num_epochs):
             print("evaluating finished \n")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
-            model.module.save_state(config.output_dir)
+            torch.save(model.module.state_dict(), config.output_dir)
+            print("saved model")

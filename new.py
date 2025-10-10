@@ -136,6 +136,8 @@ local_rank = setup()
 
 if local_rank == 0:
     writer = SummaryWriter('runs')
+    if not os.path.exists("checkpoint"):
+        os.makedirs("checkpoint")
 
 model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152).to(local_rank)
 model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
@@ -209,5 +211,5 @@ for epoch in range(config.num_epochs):
             print("evaluating finished \n")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
-            torch.save(model.module.state_dict(), config.output_dir)
+            torch.save(model.module.state_dict(), "checkpoint/model_{}.pth".format(epoch))
             print("saved model")

@@ -30,7 +30,7 @@ class TrainingConfig:
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
     lr_warmup_steps = 500
-    save_image_epochs = 5
+    save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = "fp16"  # `no` for float32, `fp16` for automatic mixed precision
     output_dir = "ddpm-butterflies-128"  # the model name locally and on the HF Hub
@@ -96,7 +96,7 @@ def forward_diffusion_sample(x_0, t):
     + sqrt_one_minus_alphas_cumprod_t.to(t.device) * noise.to(t.device), noise.to(t.device)
 
 
-T = 10
+T = 1000
 betas = cosine_beta_schedule(timesteps=T)
 alphas = 1. - betas
 alphas_cumprod = torch.cumprod(alphas, axis=0)
@@ -126,7 +126,7 @@ class BaseDataset(data.Dataset):
                 'label': 10}
 
     def __len__(self):
-        return 10 #len(self.name_list)
+        return len(self.name_list)
 
 dataset_obj = BaseDataset()
 sampler = DistributedSampler(dataset_obj, shuffle=False)

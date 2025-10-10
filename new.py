@@ -30,7 +30,7 @@ class TrainingConfig:
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
     lr_warmup_steps = 500
-    save_image_epochs = 10
+    save_image_epochs = 5
     save_model_epochs = 30
     mixed_precision = "fp16"  # `no` for float32, `fp16` for automatic mixed precision
     output_dir = "ddpm-butterflies-128"  # the model name locally and on the HF Hub
@@ -93,7 +93,7 @@ def forward_diffusion_sample(x_0, t):
     + sqrt_one_minus_alphas_cumprod_t.to(t.device) * noise.to(t.device), noise.to(t.device)
 
 
-T = 1000
+T = 10
 betas = cosine_beta_schedule(timesteps=T)
 alphas = 1. - betas
 alphas_cumprod = torch.cumprod(alphas, axis=0)
@@ -123,7 +123,7 @@ class BaseDataset(data.Dataset):
                 'label': 10}
 
     def __len__(self):
-        return len(self.name_list)
+        return 10 #len(self.name_list)
 
 train_dataloader = torch.utils.data.DataLoader(BaseDataset(), batch_size=config.train_batch_size, shuffle=True)
 model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152)
@@ -160,6 +160,7 @@ global_step = 0
 for epoch in range(config.num_epochs):
     progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch}")
+    accelerator.wait_for_everyone()
     for step, batch in enumerate(train_dataloader):
         warped = batch["warped"]
         pose = batch["pose"]

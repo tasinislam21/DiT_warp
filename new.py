@@ -201,10 +201,12 @@ for epoch in range(config.num_epochs):
     # 🔹 Only main process runs evaluation — others idle at next barrier
     if local_rank == 0:
         if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
+            print("evaluating")
             model.eval()
             with torch.no_grad():
                 evaluate(epoch)
             model.train()
+            print("evaluating finished \n")
 
         if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
             model.module.save_state(config.output_dir)

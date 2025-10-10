@@ -8,13 +8,14 @@ import torch.nn.functional as F
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.models import AutoencoderKL
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DistributedSampler
 import torch.distributed as dist
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 import torchvision
 import os
 import argparse
+dist.init_process_group(backend="nccl")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-b', '--batch', type=int, default=32)      # option that takes a value
@@ -39,8 +40,6 @@ class TrainingConfig:
 config = TrainingConfig()
 
 def setup():
-    # Initialize the process group
-    dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank

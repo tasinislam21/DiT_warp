@@ -372,7 +372,9 @@ class MMDiT(Module):
 
         self.blocks = ModuleList([])
         self.noise_embedder = PatchEmbed(32, 2, 4, 1152, bias=True)
-        self.cond_embedder = PatchEmbed(32, 2, 8, 1152, bias=True)
+        self.pose_embedder = PatchEmbed(32, 2, 4, 1152, bias=True)
+        self.cloth_embedder = PatchEmbed(32, 2, 4, 1152, bias=True)
+
         num_patches = self.noise_embedder.num_patches
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, 1152), requires_grad=False)
@@ -409,9 +411,13 @@ class MMDiT(Module):
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.noise_embedder.proj.bias, 0)
 
-        w = self.cond_embedder.proj.weight.data
+        w = self.pose_embedder.proj.weight.data
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-        nn.init.constant_(self.cond_embedder.proj.bias, 0)
+        nn.init.constant_(self.pose_embedder.proj.bias, 0)
+
+        w = self.cloth_embedder.proj.weight.data
+        nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        nn.init.constant_(self.cloth_embedder.proj.bias, 0)
 
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -438,7 +444,8 @@ class MMDiT(Module):
     def forward(
         self,
         *,
-        text_tokens,
+        pose_tokens,
+        cloth_tokens,
         image_tokens,
         text_mask = None,
         time_cond = None,
@@ -450,10 +457,13 @@ class MMDiT(Module):
             image_tokens, packed_shape = pack([register_tokens, image_tokens], 'b * d')
 
         image_tokens = self.noise_embedder(image_tokens) + self.pos_embed
-        text_tokens = self.cond_embedder(text_tokens) + self.pos_embed
+        pose_tokens = self.pose_embedder(pose_tokens) + self.pos_embed
+        cloth_tokens = self.cloth_embedder(cloth_tokens) + self.pos_embed
+
         time_cond = self.t_embedder(time_cond)
 
-        text_tokens = self.expand_streams(text_tokens)
+        pose_tokens = self.expand_streams(pose_tokens)
+        cloth_tokens = self.expand_streams(cloth_tokens)
         image_tokens = self.expand_streams(image_tokens)
 
         for ind, block in enumerate(self.blocks):

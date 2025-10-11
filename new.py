@@ -3,7 +3,7 @@ import numpy as np
 import torch.utils.data as data
 import torch
 import os.path as osp
-from MMDiT import MMDiT
+from MMDiT_multi import MMDiT
 import torch.nn.functional as F
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.models import AutoencoderKL
@@ -73,8 +73,10 @@ def sample_timestep(image, t):
     sqrt_recip_alphas_t = get_index_from_list(sqrt_recip_alphas, t, image.shape)
     # Call model (current image - noise prediction)
     with torch.no_grad():
-        sample_output = model(image_tokens=image, text_tokens=torch.cat([pose, cloth], 1), time_cond=t)
-
+        sample_output = model(
+            modality_tokens=[image, pose, cloth],
+            time_cond=t
+        )
     model_mean = sqrt_recip_alphas_t * (
             image - betas_t * sample_output / sqrt_one_minus_alphas_cumprod_t
     )
@@ -139,7 +141,7 @@ if local_rank == 0:
     if not os.path.exists("checkpoint"):
         os.makedirs("checkpoint")
 
-model = MMDiT(depth=args.depth, dim_image= 1152, dim_text = 1152, dim_cond = 1152).to(local_rank)
+model = MMDiT(depth=args.depth, dim_modalities = (1152, 1152, 1152), dim_cond = 1152).to(local_rank)
 model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
@@ -181,8 +183,7 @@ for epoch in range(config.num_epochs):
 
         optimizer.zero_grad()
         noise_pred = model(
-            image_tokens=noisy_images,
-            text_tokens=torch.cat([pose, cloth], dim=1),
+            modality_tokens=[noisy_images, pose, cloth],
             time_cond=timesteps
         )
         loss = F.mse_loss(noise_pred, noise)
